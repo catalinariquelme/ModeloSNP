@@ -1,0 +1,353 @@
+---
+title: "Modelo por gen"
+author: "Catalina Riquelme"
+date: "2023-05-09"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    collapsed: true
+    smooth_scroll: true
+    theme: journal
+    highlight: kate
+    df_print: paged
+    code_folding: show
+---
+- Finalidad: Realizar diversos modelos para cada fenotipo con diferentes algoritmo evaluando cada SNP y base por 
+separado.
+- Número de datos por modelo: un SNP, una base
+- Algotirmos: Random Forest, Support Vector Machine, K-nearest neighbors y Ridge
+
+Se entrenan diversos modelos de regresión por cada fenotipo, el número de modelos depende de las bases por cada SNP,
+es por esto que los modelos de regresión son generados en cuatro procesos distintos, uno por cada algotimo. En cada uno 
+de estos procesos se generan modelos para cada uno de los fenotipos con un algoritmo en particular, a través de ciclos, 
+los cuales repiten las mismas etapas para cada uno de los fenotipos. Al final de estos procesos se alamcenan sus 
+métricas de evaluación para una futura evaluación.
+
+# Procesos modelos de regresión
+
+## Transformación datos categoricos
+Debido a que los valores de cada uno de los SNP's son bases nitrogenadas se deben transformar los datos a variables
+dummy para poder ser utilizadas en el modelo de regresión.
+
+## División datos
+Al ser un conjunto de datos reducidos se utiliza dividen los datos en 70% entrenamiento y un 30% de prueba.
+
+## Entrenamiento
+Se realiza un entrenamiento de los modelos con los diferentes algoritmos, tomando los datos de entrenamiento 
+(70% de los datos totales) con una **validación cruzada simple** debido a la cantidad reducida de datos, evitando 
+el sobreajuste o subajuste de los datos, a través de la creación de varias particiones de los datos, entrenando 
+y probando el modelo con cada una de ellas, para esta ocasión se utilizan 10 particiones.
+
+### Coeficiente de determinación (R^2^)
+Medida estádistica que refelja la relación entre las variables y qué tan bien predice los valores de la variable 
+independiente. Se aproxima el resultado con 4 dígitos. Su ecuación es:
+$$R^2 = \frac{\sum_{t=1}^{T}(y_t - \hat{y_t})^2}{\sum_{t=1}^{T}(y_t - \bar{y})^2}$$
+
+### Error cuadrático medio (MSE)
+Utilizado para evaluar la calidad de un modelo de regresión. Indicando cuanto se desvia el modelo generado de los datos 
+observados. Su ecuación es:
+
+$$MSE = \frac{1}{n} \sum_{i=1}^{n} (y_i - \hat{y_i})^2$$
+
+
+# Preprocesamiento de datos 
+
+## Librerias
+
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(randomForest)
+library(caret)
+library(dplyr)
+library(tibble)
+library(openxlsx)
+cat("\014")
+```
+
+## Lectura de los datos
+
+```{r message=FALSE, warning=FALSE}
+fenotipos_path <- "C:/Users/ca_re/OneDrive/Desktop/Modelos/fenotipos.xlsx"
+lectura_datos <- read_excel(fenotipos_path, 
+                            col_types = c(rep("text", 55), rep("numeric", 12)),
+                            na = "NA")
+nombres_fenotipos <- names(lectura_datos)[56:67]
+```
+
+# Random Forest
+Algoritmo de aprendizaje automático que se utiliza tanto para problemas de clasificación como para problemas de 
+regresión, construye varios árboles basados en muestras aleatorias. Cada árbol predice valores y, al promediar estas
+predicciones, se obtiene una estimación final más sólida y menos propensa a errores individuales.
+```{r message=FALSE, warning=FALSE}
+resultados_rf <- data.frame(matrix(ncol=5,nrow=0)) # Dataframe donde se guardaran los resultados
+# En cada ciclo se evalua un fenotipo diferente
+for(j in 1:length(nombres_fenotipos)){
+  fenotipo <- nombres_fenotipos[j]
+  ## Preparación de los datos
+  #Se obtiene valor fenotipo y bases de los SNP's (genes)
+  datos <- setNames(data.frame(lectura_datos[[fenotipo]],lectura_datos[, 2:55]), 
+                    c(fenotipo, names(lectura_datos[, 2:55]))) 
+  
+  #Se eliminan filas con fatos NA
+  datos <- datos[-which(is.na(datos[[fenotipo]])),] 
+  
+  # Se almacenan los nombres delos genes
+  nombres_genes <- names(datos[,2:55]) 
+  
+  # Funciones Modelo de regresión
+  
+  ## Converción de datos
+  datos_dummy <- dummyVars(as.formula(paste(fenotipo, "~ .")), data = datos)
+  datos_dummy <- predict(datos_dummy, newdata = datos)
+  datos_dummy <- data.frame(datos_dummy,fenotipo=datos[,1])
+  nombres_genes <- colnames(datos_dummy)
+  
+  ## División datos
+  set.seed(j+10)
+  train_index <- sample(1:nrow(datos_dummy), 0.7 * nrow(datos_dummy))
+  datos_train = datos_dummy[train_index, ]
+  datos_test = datos_dummy[-train_index, ]
+
+  # Ejecución
+  
+  resultados_gen <- data.frame(matrix(ncol=5,nrow=0)) # Dataframe donde se guardaran los resultados
+  for(i in 1:length(head(colnames(datos_dummy), -1))){
+    datos_train_1var <- datos_train[,c(i,i,ncol(datos_train))]
+    datos_test_1var <- datos_test[,c(i,i,ncol(datos_test))]
+    # Se realiza un modelo Random Forest (con validación cruzada simple)
+    model = train(fenotipo ~ ., 
+                  data = datos_train_1var, 
+                  method = 'rf',
+                  tuneLength = 1,
+                  trControl = trainControl(method = "cv", number = 10))
+    
+    # Se utilizan los datos de prueba
+    predictions <- predict(model, newdata = datos_test_1var)
+    
+    # Se realiza la evaluación de las predicciones del modelo
+    # Coeficiente de determinación
+    r2 = round(cor(datos_test_1var$fenotipo,predictions)^2,8)  
+    # MSE
+    mse = round(mean((datos_test_1var$fenotipo - predictions)^2),8)       
+    evaluacion = data.frame(Modelo = paste("ModeloGen_rf_",colnames(datos_train)[i], sep =""),
+                            Fenotipo= nombres_fenotipos[j],R2 = r2, MSE = mse)     
+    
+    # Se almacenan los resultados obtenidos del gen
+    resultados_gen <- rbind(resultados_gen, evaluacion)
+  }
+  resultados_rf <- rbind(resultados_rf, resultados_gen)
+}
+resultados_rf
+
+```
+
+# Support Vector Machine
+Algoritmo de aprendizaje automático, que busca encontrar una línea o hiperplano que mejor se ajuste a los datos,
+minimizando la distancia entre el hiperplano y los puntos de datos. Se busca maximizar el margen entre los puntos 
+más cercanos al hiperplano, permitiendo así predecir valores numéricos basados en nuevas observaciones.
+```{r message=FALSE, warning=FALSE}
+resultados_svm <- data.frame(matrix(ncol=5,nrow=0)) # Dataframe donde se guardaran los resultados
+# En cada ciclo se evalua un fenotipo diferente
+for(j in 1:length(nombres_fenotipos)){
+  fenotipo <- nombres_fenotipos[j]
+  ## Preparación de los datos
+  #Se obtiene valor fenotipo y bases de los SNP's (genes)
+  datos <- setNames(data.frame(lectura_datos[[fenotipo]],lectura_datos[, 2:55]), 
+                    c(fenotipo, names(lectura_datos[, 2:55]))) 
+  
+  #Se eliminan filas con fatos NA
+  datos <- datos[-which(is.na(datos[[fenotipo]])),] 
+  # Se almacenan los nombres delos genes
+  nombres_genes <- names(datos[,2:55]) 
+  
+  # Funciones Modelo de regresión
+  
+  ## Converción de datos
+  datos_dummy <- dummyVars(as.formula(paste(fenotipo, "~ .")), data = datos)
+  datos_dummy <- predict(datos_dummy, newdata = datos)
+  datos_dummy <- data.frame(datos_dummy,fenotipo=datos[,1])
+  nombres_genes <- colnames(datos_dummy)
+  
+  
+  ## División datos
+  set.seed(j+100)
+  train_index <- sample(1:nrow(datos_dummy), 0.7 * nrow(datos_dummy))
+  datos_train = datos_dummy[train_index, ]
+  datos_test = datos_dummy[-train_index, ]
+  
+  # Ejecución
+  resultados_gen <- data.frame(matrix(ncol=5,nrow=0)) # Dataframe donde se guardaran los resultados
+  for(i in 1:length(head(colnames(datos_dummy), -1))){
+    datos_train_1var <- datos_train[,c(i,i,ncol(datos_train))]
+    datos_test_1var <- datos_test[,c(i,i,ncol(datos_test))]
+    
+    # Se realiza un modelo SVM (con validación cruzada simple)
+    model = train(fenotipo ~ ., 
+                  data = datos_train_1var, 
+                  method = "svmLinear",
+                  tuneLength = 1,
+                  trControl = trainControl(method = "cv", number = 10))
+    
+    
+    # Se utilizan los datos de prueba
+    predictions <- predict(model, newdata = datos_test_1var)
+    
+    # Se realiza la evaluación de las predicciones del modelo
+    # Coeficiente de determinación
+    r2 = round(cor(datos_test_1var$fenotipo,predictions)^2,8)  
+    # MSE
+    mse = round(mean((datos_test_1var$fenotipo - predictions)^2),8)       
+    evaluacion = data.frame(Modelo = paste("ModeloGen_svm_",colnames(datos_train)[i], sep =""),
+                            Fenotipo= nombres_fenotipos[j],R2 = r2, MSE = mse)
+    
+    # Se almacenan los resultados obtenidos del gen
+    resultados_gen <- rbind(resultados_gen, evaluacion)
+  }
+  resultados_svm <- rbind(resultados_svm, resultados_gen)
+}
+resultados_svm
+```
+
+# K-nearest neighbors
+Algoritmo de aprendizaje automático, se basa en encontrar una instancia basándose en los valores de sus vecinos más 
+cercanos en un espacio de características. El valor se calcula promediando los valores de los k vecinos más cercanos. 
+Es simple pero puede sufrir de sensibilidad a datos ruidosos y alta carga computacional en conjuntos de datos grandes.
+```{r message=FALSE, warning=FALSE}
+resultados_knn <- data.frame(matrix(ncol=5,nrow=0)) # Dataframe donde se guardaran los resultados
+# En cada ciclo se evalua un fenotipo diferente
+for(j in 1:length(nombres_fenotipos)){
+  fenotipo <- nombres_fenotipos[j]
+  ## Preparación de los datos
+  #Se obtiene valor fenotipo y bases de los SNP's (genes)
+  datos <- setNames(data.frame(lectura_datos[[fenotipo]],lectura_datos[, 2:55]), 
+                    c(fenotipo, names(lectura_datos[, 2:55]))) 
+  
+  #Se eliminan filas con fatos NA
+  datos <- datos[-which(is.na(datos[[fenotipo]])),] 
+  
+  # Se almacenan los nombres delos genes
+  nombres_genes <- names(datos[,2:55]) 
+  
+  # Funciones Modelo de regresión
+  
+  ## Converción de datos
+  datos_dummy <- dummyVars(as.formula(paste(fenotipo, "~ .")), data = datos)
+  datos_dummy <- predict(datos_dummy, newdata = datos)
+  datos_dummy <- data.frame(datos_dummy,fenotipo=datos[,1])
+  nombres_genes <- colnames(datos_dummy)
+  
+  ## División datos
+  set.seed(j+1000)
+  train_index <- sample(1:nrow(datos_dummy), 0.7 * nrow(datos_dummy))
+  datos_train = datos_dummy[train_index, ]
+  datos_test = datos_dummy[-train_index, ]
+  
+  # Ejecución
+  
+  resultados_gen <- data.frame(matrix(ncol=5,nrow=0)) # Dataframe donde se guardaran los resultados
+  for(i in 1:length(head(colnames(datos_dummy), -1))){
+    datos_train_1var <- datos_train[,c(i,i,ncol(datos_train))]
+    datos_test_1var <- datos_test[,c(i,i,ncol(datos_test))]
+    
+    # Se realiza un modelo kNN (con validación cruzada simple)
+    model = train(fenotipo ~ ., 
+                  data = datos_train_1var, 
+                  method = "knn",
+                  trControl = trainControl(method = "cv", number = 10))
+    
+    
+    # Se utilizan los datos de prueba
+    predictions <- predict(model, newdata = datos_test_1var)
+    
+    # Se realiza la evaluación de las predicciones del modelo
+    # Coeficiente de determinación
+    r2 = round(cor(datos_test_1var$fenotipo,predictions)^2,8)  
+    # MSE
+    mse = round(mean((datos_test_1var$fenotipo - predictions)^2),8)       
+    evaluacion = data.frame(Modelo = paste("ModeloGen_knn_",colnames(datos_train)[i], sep =""),
+                            Fenotipo= nombres_fenotipos[j],R2 = r2, MSE = mse)   
+    
+    # Se almacenan los resultados obtenidos del gen
+    resultados_gen <- rbind(resultados_gen, evaluacion)
+  }
+  resultados_knn <- rbind(resultados_knn, resultados_gen)
+}
+resultados_knn
+```
+
+# Ridge
+Método de regresión que introduce una penalización en los coeficientes de las características, forzándolos a ser 
+pequeños y evitando valores extremos. Esto reduce la complejidad del modelo y mejora su generalización a datos nuevos. 
+La regularización de Ridge controla la magnitud de los coeficientes, evitando que se vuelvan dominantes y ofreciendo un 
+equilibrio entre ajuste y simplicidad.
+```{r message=FALSE, warning=FALSE}
+resultados_ridge <- data.frame(matrix(ncol=5,nrow=0)) # Dataframe donde se guardaran los resultados
+# En cada ciclo se evalua un fenotipo diferente
+for(j in 1:length(nombres_fenotipos)){
+  fenotipo <- nombres_fenotipos[j]
+  ## Preparación de los datos
+  #Se obtiene valor fenotipo y bases de los SNP's (genes)
+  datos <- setNames(data.frame(lectura_datos[[fenotipo]],lectura_datos[, 2:55]), 
+                    c(fenotipo, names(lectura_datos[, 2:55]))) 
+  
+  #Se eliminan filas con fatos NA
+  datos <- datos[-which(is.na(datos[[fenotipo]])),] 
+  
+  # Se almacenan los nombres delos genes
+  nombres_genes <- names(datos[,2:55]) 
+  
+  # Modelo de regresión
+  
+  ## Converción de datos
+  datos_dummy <- dummyVars(as.formula(paste(fenotipo, "~ .")), data = datos)
+  datos_dummy <- predict(datos_dummy, newdata = datos)
+  datos_dummy <- data.frame(datos_dummy,fenotipo=datos[,1])
+  nombres_genes <- colnames(datos_dummy)
+  
+  ## División datos
+  set.seed(j+10000)
+  train_index <- sample(1:nrow(datos_dummy), 0.7 * nrow(datos_dummy))
+  datos_train = datos_dummy[train_index, ]
+  datos_test = datos_dummy[-train_index, ]
+
+  # Ejecución
+  resultados_gen <- data.frame(matrix(ncol=5,nrow=0)) # Dataframe donde se guardaran los resultados
+  for(i in 1:length(head(colnames(datos_dummy), -1))){
+    datos_train_1var <- datos_train[,c(i,i,ncol(datos_train))]
+    datos_test_1var <- datos_test[,c(i,i,ncol(datos_test))]
+    
+    # Se realiza un modelo Ridge(con validación cruzada simple)
+    model <- train(fenotipo ~ ., 
+                   data = datos_train_1var, 
+                   method = 'glmnet',
+                   tuneGrid = expand.grid(alpha = 0, lambda = 1),
+                   trControl = trainControl(method = "cv", number = 2))
+    
+    
+    # Se utilizan los datos de prueba
+    predictions <- predict(model, newdata = datos_test_1var)
+    
+    # Se realiza la evaluación de las predicciones del modelo
+    # Coeficiente de determinación
+    r2 = round(cor(datos_test_1var$fenotipo,predictions)^2,8)  
+    # MSE
+    mse = round(mean((datos_test_1var$fenotipo - predictions)^2),8)       
+    evaluacion = data.frame(Modelo = paste("ModeloGen_ridge_",colnames(datos_train)[i], sep =""),
+                            Fenotipo= nombres_fenotipos[j],R2 = r2, MSE = mse) 
+    
+    # Se almacenan los resultados obtenidos del gen
+    resultados_gen <- rbind(resultados_gen, evaluacion)
+  }
+  resultados_ridge <- rbind(resultados_ridge, resultados_gen)
+}
+resultados_ridge
+
+```
+
+Se unen los resultados obtenidos de los diversos algoritmos.
+```{r}
+resultados <- rbind(resultados_rf, resultados_svm,resultados_knn,resultados_ridge)
+resultados
+```

@@ -1,0 +1,417 @@
+---
+title: "Modelos incrementales"
+author: "Catalina Riquelme"
+date: "2023-05-09"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    collapsed: true
+    smooth_scroll: true
+    theme: journal
+    highlight: kate
+    df_print: paged
+    code_folding: show
+---
+- Finalidad: Realizar diversos modelos para cada fenotipo con diferentes algoritmo evaluando modelos incrementales
+(se agrega un feacture en cada modelo) registrando las métricas de cada modelo para posteriormente evaluar los resultados
+de cada modelo.
+- Número de datos por modelo: (1-20 datos, de manera incremntal)
+- Algotirmos: Random Forest, Support Vector Machine, K-nearest neighbors y Ridge
+
+Se entrenan diversos modelos de regresión por cada fenotipo, 20 por cada algoritmo, es por esto que los modelos de 
+regresión son generados en cuatro procesos distintos. En cada uno de estos procesos se generan
+modelos para cada uno de los fenotipos con un algoritmo en particular, a través de ciclos, los cuales repiten las 
+mismas etapas para cada uno de los fenotipos. Al final de estos procesos se alamcenan sus métricas de evaluación 
+para una futura evaluación.
+
+# Procesos modelos de regresión
+
+## Transformación datos categoricos
+Debido a que los valores de cada uno de los SNP's son bases nitrogenadas se deben transformar los datos a variables
+dummy para poder ser utilizadas en el modelo de regresión.
+
+## División datos
+Al ser un conjunto de datos reducidos se utiliza dividen los datos en 70% entrenamiento y un 30% de prueba.
+
+## Entrenamiento
+Se realiza un entrenamiento de los modelos con los diferentes algoritmos, tomando los datos de entrenamiento 
+(70% de los datos totales) con una **validación cruzada simple** debido a la cantidad reducida de datos, evitando 
+el sobreajuste o subajuste de los datos, a través de la creación de varias particiones de los datos, entrenando 
+y probando el modelo con cada una de ellas, para esta ocasión se utilizan 10 particiones.
+
+### Coeficiente de determinación (R^2^)
+Medida estádistica que refelja la relación entre las variables y qué tan bien predice los valores de la variable 
+independiente. Se aproxima el resultado con 4 dígitos. Su ecuación es:
+$$R^2 = \frac{\sum_{t=1}^{T}(y_t - \hat{y_t})^2}{\sum_{t=1}^{T}(y_t - \bar{y})^2}$$
+
+### Error cuadrático medio (MSE)
+Utilizado para evaluar la calidad de un modelo de regresión. Indicando cuanto se desvia el modelo generado de los datos 
+observados. Su ecuación es:
+
+$$MSE = \frac{1}{n} \sum_{i=1}^{n} (y_i - \hat{y_i})^2$$
+# Preprocesamiento de datos 
+
+## Librerias
+
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(randomForest)
+library(caret)
+library(dplyr)
+library(tibble)
+library(openxlsx)
+cat("\014")
+```
+
+## Lectura de los datos
+
+```{r message=FALSE, warning=FALSE}
+fenotipos_path <- "C:/Users/ca_re/OneDrive/Desktop/Modelos/fenotipos.xlsx"
+lectura_datos <- read_excel(fenotipos_path, 
+                            col_types = c(rep("text", 55), rep("numeric", 12)),
+                            na = "NA")
+nombres_fenotipos <- names(lectura_datos)[56:67]
+```
+
+#Random Forest
+Algoritmo de aprendizaje automático que se utiliza tanto para problemas de clasificación como para problemas de 
+regresión, construye varios árboles basados en muestras aleatorias. Cada árbol predice valores y, al promediar estas
+predicciones, se obtiene una estimación final más sólida y menos propensa a errores individuales.
+```{r}
+resultados_rf <- data.frame(matrix(ncol=3,nrow=0)) # Dataframe donde se guardaran los resultados
+# En cada ciclo se evalua un fenotipo diferente
+for(j in 1:length(nombres_fenotipos)){
+  fenotipo <- nombres_fenotipos[j]
+  top_path <- paste("C:/Users/ca_re/OneDrive/Desktop/Modelos/Codigo supremo/Importantes/RF/Importantes_RF_",nombres_fenotipos[j],".xlsx",sep="")
+  datos_top <- read_excel(top_path, 
+                          col_types = c(rep("text", 1), rep("numeric", 1), rep("numeric", 1)),
+                          na = "NA")
+  ## Preparación de los datos
+  #Se obtiene valor fenotipo y bases de los SNP's (genes)
+  datos <- setNames(data.frame(lectura_datos[[fenotipo]],lectura_datos[, 2:55]), 
+                    c(fenotipo, names(lectura_datos[, 2:55]))) 
+  
+  #Se eliminan filas con fatos NA
+  datos <- datos[-which(is.na(datos[[fenotipo]])),] 
+  nombres_genes <- datos_top$Nombre #Se almacenan los nombres de los genes que tienen importancia
+  
+  # Funciones Modelo de regresión
+  
+  ## Converción de datos
+  datos_dummy <- dummyVars(as.formula(paste(fenotipo, "~ .")), data = datos)
+  datos_dummy <- predict(datos_dummy, newdata = datos)
+  datos_dummy <- data.frame(datos_dummy,fenotipo=datos[,1])
+  
+  datos_top <- data.frame(matrix(ncol=0,nrow=330))
+  #Se almacena la información de los datos que tienen más importancia (20)
+  for(k in 1:length(nombres_genes)){
+    col_index <- match(nombres_genes[k], colnames(datos_dummy))
+    dato_gen <- setNames(data.frame(dato = datos_dummy[,col_index]),nombres_genes[k])
+    datos_top <- cbind(datos_top, dato_gen)
+  }
+  datos_top <- cbind(datos_top, fenotipo = datos_dummy[,163])
+  ## División datos
+  set.seed(j+10)
+  train_index <- sample(1:nrow(datos_top), 0.7 * nrow(datos_top))
+  datos_train = datos_top[train_index, ]
+  datos_test = datos_top[-train_index, ]
+  
+  # Ejecución
+  
+  resultados_gen <- data.frame(matrix(ncol=3,nrow=0)) # Dataframe donde se guardaran los resultados
+  datos_train_incremental <- data.frame(fenotipo = datos_train$fenotipo)
+  datos_test_incremental <- data.frame(fenotipo = datos_test$fenotipo)
+  # Se agrega en cada ciclo un dato en los datos de entrenamiento y prueba
+  for(i in 1:length(nombres_genes)){
+    
+    datos_train_1variable = datos_train[,c(i,i,ncol(datos_train))]
+    datos_test_1variable = datos_test[,c(i,i,ncol(datos_test))]
+    
+    datos_train_incremental <- cbind(datos_train_incremental,datos_train_1variable[, 1:2])
+    datos_test_incremental <- cbind(datos_test_incremental,datos_test_1variable[, 1:2])
+    
+    # Se realiza un modelo Random forest (con validación cruzada simple)
+    model = train(fenotipo ~ ., data = datos_train_incremental,
+                  method = 'rf',
+                  trControl = trainControl(method = "cv", number = 10),
+                  tuneLength = 1)
+    
+    # Se utilizan los datos de prueba
+    predictions <- predict(model, newdata = datos_test_incremental)
+    
+    # Se realiza la evaluación de las predicciones del modelo
+    # Coeficiente de determinación
+    r2 = round(cor(datos_test_incremental$fenotipo,predictions)^2,8)             
+    # MSE
+    mse = round(mean((datos_test_incremental$fenotipo - predictions)^2),8)       
+    evaluacion = data.frame(Modelo = paste("ModeloIncremental_rf_",i,sep = ""),
+                            Fenotipo= nombres_fenotipos[j],R2 = r2, MSE = mse)     
+    
+    # Se almacenan los resultados obtenidos del gen
+    resultados_gen <- rbind(resultados_gen, evaluacion)
+  }
+  resultados_rf <- rbind(resultados_rf, resultados_gen)
+}
+resultados_rf
+```
+
+# Support Vector Machine
+Algoritmo de aprendizaje automático, que busca encontrar una línea o hiperplano que mejor se ajuste a los datos,
+minimizando la distancia entre el hiperplano y los puntos de datos. Se busca maximizar el margen entre los puntos 
+más cercanos al hiperplano, permitiendo así predecir valores numéricos basados en nuevas observaciones.
+```{r}
+resultados_svm <- data.frame(matrix(ncol=3,nrow=0)) # Dataframe donde se guardaran los resultados
+# En cada ciclo se evalua un fenotipo diferente
+for(j in 1:length(nombres_fenotipos)){
+  fenotipo <- nombres_fenotipos[j]
+  top_path <- paste("C:/Users/ca_re/OneDrive/Desktop/Modelos/Codigo supremo/Importantes/RF/Importantes_RF_",nombres_fenotipos[j],".xlsx",sep="")
+  datos_top <- read_excel(top_path, 
+                          col_types = c(rep("text", 1), rep("numeric", 1), rep("numeric", 1)),
+                          na = "NA")
+  ## Preparación de los datos
+  #Se obtiene valor fenotipo y bases de los SNP's (genes)
+  datos <- setNames(data.frame(lectura_datos[[fenotipo]],lectura_datos[, 2:55]), 
+                    c(fenotipo, names(lectura_datos[, 2:55]))) 
+  
+  #Se eliminan filas con fatos NA
+  datos <- datos[-which(is.na(datos[[fenotipo]])),] 
+  nombres_genes <- datos_top$Nombre #Se almacenan los nombres de los genes que tienen importancia
+  
+  # Funciones Modelo de regresión
+  
+  ## Converción de datos
+  datos_dummy <- dummyVars(as.formula(paste(fenotipo, "~ .")), data = datos)
+  datos_dummy <- predict(datos_dummy, newdata = datos)
+  datos_dummy <- data.frame(datos_dummy,fenotipo=datos[,1])
+  
+  datos_top <- data.frame(matrix(ncol=0,nrow=330))
+  #Se almacena la inforamción de los datos que tienen más importancia (20)
+  for(k in 1:length(nombres_genes)){
+    col_index <- match(nombres_genes[k], colnames(datos_dummy))
+    dato_gen <- setNames(data.frame(dato = datos_dummy[,col_index]),nombres_genes[k])
+    datos_top <- cbind(datos_top, dato_gen)
+  }
+  datos_top <- cbind(datos_top, fenotipo = datos_dummy[,163])
+  ## División datos
+  set.seed(j+100)
+  train_index <- sample(1:nrow(datos_top), 0.7 * nrow(datos_top))
+  datos_train = datos_top[train_index, ]
+  datos_test = datos_top[-train_index, ]
+  
+  # Ejecución
+  
+  resultados_gen <- data.frame(matrix(ncol=3,nrow=0)) # Dataframe donde se guardaran los resultados
+  datos_train_incremental <- data.frame(fenotipo = datos_train$fenotipo)
+  datos_test_incremental <- data.frame(fenotipo = datos_test$fenotipo)
+  # Se agrega en cada ciclo un dato en los datos de entrenamiento y prueba
+  for(i in 1:length(nombres_genes)){
+    
+    datos_train_1variable = datos_train[,c(i,i,ncol(datos_train))]
+    datos_test_1variable = datos_test[,c(i,i,ncol(datos_test))]
+    
+    datos_train_incremental <- cbind(datos_train_incremental,datos_train_1variable[, 1:2])
+    datos_test_incremental <- cbind(datos_test_incremental,datos_test_1variable[, 1:2])
+    
+    # Se realiza un modelo Random forest (con validación cruzada simple)
+    model = train(fenotipo ~ ., 
+                  data = datos_train_incremental, 
+                  method = "svmLinear",
+                  tuneLength = 1,
+                  trControl = trainControl(method = "cv", number = 10))
+    
+    # Se utilizan los datos de prueba
+    predictions <- predict(model, newdata = datos_test_incremental)
+    
+    # Se realiza la evaluación de las predicciones del modelo
+    # Coeficiente de determinación
+    r2 = round(cor(datos_test_incremental$fenotipo,predictions)^2,8)             
+    # MSE
+    mse = round(mean((datos_test_incremental$fenotipo - predictions)^2),8)       
+    evaluacion = data.frame(Modelo = paste("ModeloIncremental_svm_",i,sep = ""),
+                            Fenotipo= nombres_fenotipos[j],R2 = r2, MSE = mse)     
+    
+    # Se almacenan los resultados obtenidos del gen
+    resultados_gen <- rbind(resultados_gen, evaluacion)
+  }
+  resultados_svm <- rbind(resultados_svm, resultados_gen)
+}
+resultados_svm
+```
+
+# K-nearest neighbors
+Algoritmo de aprendizaje automático, se basa en encontrar una instancia basándose en los valores de sus vecinos más 
+cercanos en un espacio de características. El valor se calcula promediando los valores de los k vecinos más cercanos. 
+Es simple pero puede sufrir de sensibilidad a datos ruidosos y alta carga computacional en conjuntos de datos grandes.
+```{r}
+resultados_knn <- data.frame(matrix(ncol=3,nrow=0)) # Dataframe donde se guardaran los resultados_knn
+# En cada ciclo se evalua un fenotipo diferente
+for(j in 1:length(nombres_fenotipos)){
+  fenotipo <- nombres_fenotipos[j]
+  top_path <- paste("C:/Users/ca_re/OneDrive/Desktop/Modelos/Codigo supremo/Importantes/kNN/Importantes_kNN_",nombres_fenotipos[j],".xlsx",sep="")
+  datos_top <- read_excel(top_path, 
+                          col_types = c(rep("text", 1), rep("numeric", 1)),
+                          na = "NA")
+  ## Preparación de los datos
+  #Se obtiene valor fenotipo y bases de los SNP's (genes)
+  datos <- setNames(data.frame(lectura_datos[[fenotipo]],lectura_datos[, 2:55]), 
+                    c(fenotipo, names(lectura_datos[, 2:55]))) 
+  
+  #Se eliminan filas con fatos NA
+  datos <- datos[-which(is.na(datos[[fenotipo]])),] 
+  nombres_genes <- datos_top$Nombre #Se almacenan los nombres de los genes que tienen importancia
+  
+  # Funciones Modelo de regresión
+  
+  ## Converción de datos
+  datos_dummy <- dummyVars(as.formula(paste(fenotipo, "~ .")), data = datos)
+  datos_dummy <- predict(datos_dummy, newdata = datos)
+  datos_dummy <- data.frame(datos_dummy,fenotipo=datos[,1])
+  
+  datos_top <- data.frame(matrix(ncol=0,nrow=330))
+  #Se almacena la información de los datos que tienen más importancia (20)
+  for(k in 1:length(nombres_genes)){
+    col_index <- match(nombres_genes[k], colnames(datos_dummy))
+    dato_gen <- setNames(data.frame(dato = datos_dummy[,col_index]),nombres_genes[k])
+    datos_top <- cbind(datos_top, dato_gen)
+  }
+  datos_top <- cbind(datos_top, fenotipo = datos_dummy[,163])
+  ## División datos
+  set.seed(j+1000)
+  train_index <- sample(1:nrow(datos_top), 0.7 * nrow(datos_top))
+  datos_train = datos_top[train_index, ]
+  datos_test = datos_top[-train_index, ]
+  
+  # Ejecución
+  
+  resultados_gen <- data.frame(matrix(ncol=3,nrow=0)) # Dataframe donde se guardaran los resultados_knn
+  datos_train_incremental <- data.frame(fenotipo = datos_train$fenotipo)
+  datos_test_incremental <- data.frame(fenotipo = datos_test$fenotipo)
+  # Se agrega en cada ciclo un dato en los datos de entrenamiento y prueba
+  for(i in 1:length(nombres_genes)){
+    datos_train_1variable = datos_train[,c(i,i,ncol(datos_train))]
+    datos_test_1variable = datos_test[,c(i,i,ncol(datos_test))]
+    
+    datos_train_incremental <- cbind(datos_train_incremental,datos_train_1variable[, 1:2])
+    datos_test_incremental <- cbind(datos_test_incremental,datos_test_1variable[, 1:2])
+    
+    # Se realiza un modelo Random forest (con validación cruzada simple)
+    model = train(fenotipo ~ ., 
+                  data = datos_train_incremental, 
+                  method = "knn",
+                  trControl = trainControl(method = "cv", number = 10))
+    
+    # Se utilizan los datos de prueba
+    predictions <- predict(model, newdata = datos_test_incremental)
+    
+    # Se realiza la evaluación de las predicciones del modelo
+    # Coeficiente de determinación
+    r2 = round(cor(datos_test_incremental$fenotipo,predictions)^2,8)             
+    # MSE
+    mse = round(mean((datos_test_incremental$fenotipo - predictions)^2),8)       
+    evaluacion = data.frame(Modelo = paste("ModeloIncremental_knn_",i,sep = ""), 
+                            Fenotipo= nombres_fenotipos[j],R2 = r2, MSE = mse)     
+    
+    # Se almacenan los resultados_knn obtenidos del gen
+    resultados_gen <- rbind(resultados_gen, evaluacion)
+  }
+  resultados_knn <- rbind(resultados_knn, resultados_gen)
+}
+resultados_knn
+
+```
+
+# Ridge
+Método de regresión que introduce una penalización en los coeficientes de las características, forzándolos a ser 
+pequeños y evitando valores extremos. Esto reduce la complejidad del modelo y mejora su generalización a datos nuevos. 
+La regularización de Ridge controla la magnitud de los coeficientes, evitando que se vuelvan dominantes y ofreciendo un 
+equilibrio entre ajuste y simplicidad.
+```{r message=FALSE, warning=FALSE}
+resultados_ridge <- data.frame(matrix(ncol=3,nrow=0))
+# En cada ciclo se evalua un fenotipo diferente
+for(j in 1:length(nombres_fenotipos)){
+  fenotipo <- nombres_fenotipos[j]
+  top_path <- paste("C:/Users/ca_re/OneDrive/Desktop/Modelos/Codigo supremo/Importantes/Ridge/Importantes_Ridge_",nombres_fenotipos[j],".xlsx",sep="")
+  datos_top <- read_excel(top_path, 
+                          col_types = c(rep("text", 1), rep("numeric", 1)),
+                          na = "NA")
+  ## Preparación de los datos
+  #Se obtiene valor fenotipo y bases de los SNP's (genes)
+  datos <- setNames(data.frame(lectura_datos[[fenotipo]],lectura_datos[, 2:55]), 
+                    c(fenotipo, names(lectura_datos[, 2:55]))) 
+  
+  #Se eliminan filas con fatos NA
+  datos <- datos[-which(is.na(datos[[fenotipo]])),] 
+  nombres_genes <- datos_top$Nombre #Se almacenan los nombres de los genes que tienen importancia
+  
+  # Funciones Modelo de regresión
+  
+  ## Converción de datos
+  datos_dummy <- dummyVars(as.formula(paste(fenotipo, "~ .")), data = datos)
+  datos_dummy <- predict(datos_dummy, newdata = datos)
+  datos_dummy <- data.frame(datos_dummy,fenotipo=datos[,1])
+  
+  datos_top <- data.frame(matrix(ncol=0,nrow=330))
+  #Se almacena la información de los datos que tienen más importancia (20)
+  for(k in 1:length(nombres_genes)){
+    col_index <- match(nombres_genes[k], colnames(datos_dummy))
+    dato_gen <- setNames(data.frame(dato = datos_dummy[,col_index]),nombres_genes[k])
+    datos_top <- cbind(datos_top, dato_gen)
+  }
+  datos_top <- cbind(datos_top, fenotipo = datos_dummy[,163])
+  ## División datos
+  set.seed(j+10000)
+  train_index <- sample(1:nrow(datos_top), 0.7 * nrow(datos_top))
+  datos_train = datos_top[train_index, ]
+  datos_test = datos_top[-train_index, ]
+  
+  # Ejecución
+  
+  resultados_gen <- data.frame(matrix(ncol=3,nrow=0)) # Dataframe donde se guardaran los resultados
+  datos_train_incremental <- data.frame(fenotipo = datos_train$fenotipo)
+  datos_test_incremental <- data.frame(fenotipo = datos_test$fenotipo)
+  # Se agrega en cada ciclo un dato en los datos de entrenamiento y prueba
+  for(i in 1:length(nombres_genes)){
+    
+    datos_train_1variable = datos_train[,c(i,i,ncol(datos_train))]
+    datos_test_1variable = datos_test[,c(i,i,ncol(datos_test))]
+    
+    datos_train_incremental <- cbind(datos_train_incremental,datos_train_1variable[, 1:2])
+    datos_test_incremental <- cbind(datos_test_incremental,datos_test_1variable[, 1:2])
+    
+    # Se realiza un modelo Ridge (con validación cruzada simple)
+    model = train(fenotipo ~ ., 
+                  data = datos_train_incremental, 
+                  method = 'glmnet',
+                  tuneGrid = expand.grid(alpha = 0, lambda = 1),
+                  trControl = trainControl(method = "cv", number = 10))
+    
+    # Se utilizan los datos de prueba
+    predictions <- predict(model, newdata = datos_test_incremental)
+    
+    # Se realiza la evaluación de las predicciones del modelo
+    # Coeficiente de determinación
+    r2 = round(cor(datos_test_incremental$fenotipo,predictions)^2,8)             
+    # MSE
+    mse = round(mean((datos_test_incremental$fenotipo - predictions)^2),8)       
+    evaluacion = data.frame(Modelo = paste("ModeloIncremental_ridge_",i,sep = ""), 
+                            Fenotipo= nombres_fenotipos[j],R2 = r2, MSE = mse)     
+    
+    # Se almacenan los resultados obtenidos del gen
+    resultados_gen <- rbind(resultados_gen, evaluacion)
+  }
+  resultados_ridge <- rbind(resultados_ridge, resultados_gen)
+  
+}
+resultados_ridge
+
+```
+
+Se unen los resultados obtenidos de los diversos algoritmos.
+```{r}
+resultados <- rbind(resultados_rf, resultados_svm,resultados_knn,resultados_ridge)
+resultados
+ruta <- "C:/Users/ca_re/OneDrive/Desktop/Modelos/Codigo supremo v2/Información/ModelosIncremental.csv"
+write.csv(resultados, file = ruta, row.names = FALSE)
+```
